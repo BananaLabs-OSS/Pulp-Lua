@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"encoding/json"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -180,6 +181,7 @@ func testNormalCheckoutCompositionExactOwnerContracts(t *testing.T, failEffect, 
 		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	var calls []string
 	quoteCalls := 0
+	freeEffectCalls := 0
 	caller := CallFunc(func(target, function string, payload []byte) ([]byte, error) {
 		calls = append(calls, target+"/"+function)
 		var command map[string]any
@@ -358,11 +360,78 @@ func testNormalCheckoutCompositionExactOwnerContracts(t *testing.T, failEffect, 
 			if err != nil {
 				t.Fatal(err)
 			}
-			expectedID := "checkout:checkout-request-1:stripe"
+			var result any
 			if free {
-				expectedID = "checkout:checkout-request-1:free-invoice"
-			}
-			if intent.ID != expectedID ||
+				// The checkout composition owns the free-invoice dependency chain.
+				// Each provider operation has a receipt-bound intent; Commerce only
+				// sees the synthesized receipt for the original compound intent.
+				freeEffectCalls++
+				step := freeEffectCalls
+				expected := []struct {
+					id, kind, key string
+					payload       map[string]any
+					result        map[string]any
+				}{
+					{
+						id:   "checkout:checkout-request-1:free-invoice:customer",
+						kind: "pulp.effect.stripe.customer.create.v1", key: "checkout-key-1:payment:customer",
+						payload: map[string]any{
+							"email": "player@example.test", "description": "Minecraft Server (paper)",
+							"metadata": map[string]any{"order_id": "order-1", "checkout_id": "checkout-request-1"},
+						},
+						result: map[string]any{"customer_id": "cus_1"},
+					},
+					{
+						id:   "checkout:checkout-request-1:free-invoice:item",
+						kind: "pulp.effect.stripe.invoice-item.create.v1", key: "checkout-key-1:payment:item",
+						payload: map[string]any{
+							"customer_id": "cus_1", "amount_cents": int64(1200), "currency": "usd",
+							"description": "Minecraft Server (paper)",
+						},
+						result: map[string]any{"invoice_item_id": "ii_1"},
+					},
+					{
+						id:   "checkout:checkout-request-1:free-invoice:invoice",
+						kind: "pulp.effect.stripe.invoice.create.v1", key: "checkout-key-1:payment:invoice",
+						payload: map[string]any{
+							"customer_id": "cus_1", "description": "Minecraft Server (paper)",
+							"auto_advance": false, "collection_method": "charge_automatically",
+							"metadata":          map[string]any{"order_id": "order-1", "checkout_id": "checkout-request-1"},
+							"promotion_code_id": "promo_1",
+						},
+						result: map[string]any{"invoice_id": "in_1", "status": "draft"},
+					},
+					{
+						id:   "checkout:checkout-request-1:free-invoice:finalize",
+						kind: "pulp.effect.stripe.invoice.finalize.v1", key: "checkout-key-1:payment:finalize",
+						payload: map[string]any{"invoice_id": "in_1"},
+						result:  map[string]any{"invoice_id": "in_1", "status": "open", "amount_due": int64(0)},
+					},
+					{
+						id:   "checkout:checkout-request-1:free-invoice:paid",
+						kind: "pulp.effect.stripe.invoice.mark-paid.v1", key: "checkout-key-1:payment:paid",
+						payload: map[string]any{"invoice_id": "in_1"},
+						result: map[string]any{
+							"invoice_id": "in_1", "status": "paid", "amount_due": int64(0), "amount_paid": int64(0),
+						},
+					},
+				}
+				if step > len(expected) {
+					t.Fatalf("unexpected free invoice unit effect %d: %#v", step, intent)
+				}
+				want := expected[step-1]
+				if intent.ID != want.id || intent.Kind != want.kind || intent.IdempotencyKey != want.key {
+					t.Fatalf("free invoice unit intent %d = %#v, want id=%q kind=%q key=%q", step, intent, want.id, want.kind, want.key)
+				}
+				var gotPayload map[string]any
+				if err := msgpack.Unmarshal(intent.Payload, &gotPayload); err != nil {
+					t.Fatalf("decode free invoice unit payload %d: %v", step, err)
+				}
+				if !reflect.DeepEqual(gotPayload, want.payload) {
+					t.Fatalf("free invoice unit payload %d = %#v, want %#v", step, gotPayload, want.payload)
+				}
+				result = want.result
+			} else if intent.ID != "checkout:checkout-request-1:stripe" ||
 				intent.IdempotencyKey != "checkout-key-1:payment" {
 				t.Fatalf("effect intent = %#v", intent)
 			}
@@ -372,10 +441,7 @@ func testNormalCheckoutCompositionExactOwnerContracts(t *testing.T, failEffect, 
 					Code: "stripe_unavailable", Message: "Stripe is unavailable",
 				})
 			} else if free {
-				receipt, err = effect.NewCompletedReceipt(intent, effect.StripeFreeInvoiceFinalizeResult{
-					CustomerID: "cus_1", InvoiceItemID: "ii_1", InvoiceID: "in_1",
-					Status: "paid", AmountDue: 0, AmountPaid: 0,
-				})
+				receipt, err = effect.NewCompletedReceipt(intent, result)
 			} else {
 				receipt, err = effect.NewCompletedReceipt(intent, map[string]any{
 					"id": "pi_123", "client_secret": "pi_secret_123",
@@ -574,9 +640,23 @@ func testNormalCheckoutCompositionExactOwnerContracts(t *testing.T, failEffect, 
 		"fleet/fleet.v1.command.checkout.reserve",
 		"fleet/fleet.v1.command.checkout.recheck",
 		"commerce/commerce.checkout.normal.admit.v1",
-		"effects/effects.execute.v1",
 		"commerce/commerce.checkout.effect.apply.v1",
 	)
+	if free {
+		wantCalls = append(wantCalls[:len(wantCalls)-1],
+			"effects/effects.execute.v1",
+			"effects/effects.execute.v1",
+			"effects/effects.execute.v1",
+			"effects/effects.execute.v1",
+			"effects/effects.execute.v1",
+			"commerce/commerce.checkout.effect.apply.v1",
+		)
+	} else {
+		wantCalls = append(wantCalls[:len(wantCalls)-1],
+			"effects/effects.execute.v1",
+			"commerce/commerce.checkout.effect.apply.v1",
+		)
+	}
 	if failEffect {
 		wantCalls = append(wantCalls, "fleet/fleet.v1.command.capacity.release")
 	}

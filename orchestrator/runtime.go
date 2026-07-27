@@ -238,6 +238,7 @@ func (r *Runtime) installPulpModule() {
 		"current_saga":     r.luaCurrentSaga,
 		"app_execute_saga": r.luaAppExecuteSaga,
 		"pack":             r.luaPack,
+		"bytes":            r.luaBytes,
 		"sha256":           r.luaSHA256,
 		"raw":              r.luaRaw,
 		"unpack":           r.luaUnpack,
@@ -506,6 +507,26 @@ func (r *Runtime) luaPack(l *lua.LState) int {
 }
 
 type rawMessageValue []byte
+
+// bytesValue marks an opaque Lua string for MessagePack's binary type.  Lua
+// strings otherwise encode as MessagePack strings, which cannot satisfy a Go
+// []byte contract.  Unlike rawMessageValue this is not embedded MessagePack;
+// its bytes are kept opaque by the receiving owner.
+type bytesValue []byte
+
+// luaBytes creates a private binary marker for pulp.pack.  It is deliberately
+// distinct from pulp.raw: raw embeds one already-valid MessagePack value,
+// whereas bytes encodes an opaque MessagePack bin field.
+func (r *Runtime) luaBytes(l *lua.LState) int {
+	cloned := append(bytesValue(nil), []byte(l.CheckString(1))...)
+	userdata := l.NewUserData()
+	userdata.Value = cloned
+	metatable := l.NewTable()
+	metatable.RawSetString("__metatable", lua.LString("pulp.bytes"))
+	l.SetMetatable(userdata, metatable)
+	l.Push(userdata)
+	return 1
+}
 
 // luaRaw marks exactly one validated MessagePack value for embedding by
 // pulp.pack. The private userdata is rejected everywhere else and carries a

@@ -15,11 +15,14 @@ func luaToPackValue(value lua.LValue, seen map[*lua.LTable]bool, depth int) (any
 		return nil, fmt.Errorf("value nesting exceeds %d", maxValueDepth)
 	}
 	if userdata, ok := value.(*lua.LUserData); ok {
-		raw, ok := userdata.Value.(rawMessageValue)
-		if !ok {
+		switch typed := userdata.Value.(type) {
+		case rawMessageValue:
+			return msgpack.RawMessage(append([]byte(nil), typed...)), nil
+		case bytesValue:
+			return []byte(append([]byte(nil), typed...)), nil
+		default:
 			return nil, fmt.Errorf("unsupported Lua userdata in pulp.pack")
 		}
-		return msgpack.RawMessage(append([]byte(nil), raw...)), nil
 	}
 	table, ok := value.(*lua.LTable)
 	if !ok {

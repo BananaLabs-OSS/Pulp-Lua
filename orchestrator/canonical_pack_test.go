@@ -122,6 +122,36 @@ end)
 	}
 }
 
+func TestRuntimePackEncodesBytesMarkerAsMessagePackBinary(t *testing.T) {
+	runtime, err := New(Options{Script: `
+pulp.on("bytes", function()
+  return pulp.pack({ payload = pulp.bytes(pulp.pack({ value = "opaque" })) })
+end)
+`})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer runtime.Close()
+
+	result, err := runtime.Dispatch(DispatchRequest{Event: "bytes"})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	var decoded struct {
+		Payload []byte `msgpack:"payload"`
+	}
+	if err := msgpack.Unmarshal([]byte(result.Value.(string)), &decoded); err != nil {
+		t.Fatalf("decode binary envelope: %v", err)
+	}
+	var payload map[string]any
+	if err := msgpack.Unmarshal(decoded.Payload, &payload); err != nil {
+		t.Fatalf("decode opaque bytes: %v", err)
+	}
+	if payload["value"] != "opaque" {
+		t.Fatalf("decoded opaque bytes = %#v", payload)
+	}
+}
+
 func TestRuntimePackFingerprintReplayForStatusServerPayload(t *testing.T) {
 	runtime, err := New(Options{Script: `
 local function status_payload(reverse)
