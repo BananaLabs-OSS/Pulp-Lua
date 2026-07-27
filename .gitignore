@@ -1,0 +1,15 @@
+# Local secrets and credentials (never version)
+.env*
+**/*.pem
+**/*.key
+secret/**
+**/.ssh/**
+
+# Local/editor/build noise
+.DS_Store
+Thumbs.db
+*.tmp
+*.log
+*.test
+coverage.out
+

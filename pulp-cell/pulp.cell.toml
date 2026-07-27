@@ -1,0 +1,27 @@
+name = "lua-orchestrator"
+version = "0.1.0"
+wasm = "lua-orchestrator.wasm"
+wasm_sha256 = "ae765b5df3c851e8e68ab31ac96b842eec231e62323cceb9b4fcb439cff58e79"
+
+# The application-specific deployment manifest must list every engine the Lua
+# script may call. Empty here keeps the reusable cell least-privileged.
+consumes = []
+depends_on = []
+
+provides = ["orchestrator"]
+
+# No host capabilities are required. Lua receives no filesystem, network, OS,
+# entropy, or clock authority unless a future adapter is explicitly declared.
+capabilities = []
+
+[config]
+timeout_ms = 30000
+script = """
+pulp.on("health", function(payload)
+  return {
+    ok = true,
+    runtime = "lua",
+    application = payload and payload.application or "pulp"
+  }
+end)
+"""
