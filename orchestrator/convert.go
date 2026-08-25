@@ -10,6 +10,11 @@ import (
 	lua "github.com/yuin/gopher-lua"
 )
 
+// arrayValue preserves an empty Lua array across the MessagePack boundary.
+// Plain Lua tables cannot otherwise distinguish {} as an empty map from an
+// empty list, while typed engines often require an array even when it is empty.
+type arrayValue []any
+
 func luaToPackValue(value lua.LValue, seen map[*lua.LTable]bool, depth int) (any, error) {
 	if depth > maxValueDepth {
 		return nil, fmt.Errorf("value nesting exceeds %d", maxValueDepth)
@@ -20,6 +25,8 @@ func luaToPackValue(value lua.LValue, seen map[*lua.LTable]bool, depth int) (any
 			return msgpack.RawMessage(append([]byte(nil), typed...)), nil
 		case bytesValue:
 			return []byte(append([]byte(nil), typed...)), nil
+		case arrayValue:
+			return []any(typed), nil
 		default:
 			return nil, fmt.Errorf("unsupported Lua userdata in pulp.pack")
 		}
@@ -90,6 +97,11 @@ func luaToGo(value lua.LValue, seen map[*lua.LTable]bool, depth int) (any, error
 		return nil, fmt.Errorf("value nesting exceeds %d", maxValueDepth)
 	}
 	switch typed := value.(type) {
+	case *lua.LUserData:
+		if array, ok := typed.Value.(arrayValue); ok {
+			return []any(array), nil
+		}
+		return nil, fmt.Errorf("unsupported Lua value type %s", value.Type())
 	case *lua.LNilType:
 		return nil, nil
 	case lua.LBool:

@@ -231,6 +231,7 @@ func (r *Runtime) openSandbox() error {
 
 func (r *Runtime) installPulpModule() {
 	module := r.lua.SetFuncs(r.lua.NewTable(), map[string]lua.LGFunction{
+		"array":            r.luaArray,
 		"on":               r.luaOn,
 		"call":             r.luaCall,
 		"call_raw":         r.luaCallRaw,
@@ -249,6 +250,34 @@ func (r *Runtime) installPulpModule() {
 		"log":              r.luaLog,
 	})
 	r.lua.SetGlobal("pulp", module)
+}
+
+// luaArray marks a Lua table as a MessagePack array. It exists solely to
+// preserve the otherwise ambiguous empty-table case; non-empty arrays are
+// inferred normally by luaToPackValue.
+func (r *Runtime) luaArray(l *lua.LState) int {
+	table := l.CheckTable(1)
+	value, err := luaToPackValue(table, map[*lua.LTable]bool{}, 0)
+	if err != nil {
+		l.RaiseError("pulp.array: %v", err)
+		return 0
+	}
+	items, ok := value.([]any)
+	if !ok {
+		if table.Len() == 0 {
+			items = []any{}
+		} else {
+			l.RaiseError("pulp.array: table must use contiguous numeric keys")
+			return 0
+		}
+	}
+	userdata := l.NewUserData()
+	userdata.Value = arrayValue(items)
+	metatable := l.NewTable()
+	metatable.RawSetString("__metatable", lua.LString("pulp.array"))
+	l.SetMetatable(userdata, metatable)
+	l.Push(userdata)
+	return 1
 }
 
 func (r *Runtime) luaOn(l *lua.LState) int {

@@ -15,7 +15,7 @@ import (
 func normalCheckoutGatherCalls() []string {
 	return []string{
 		"sessions/sessions.gene.route-intent.parse.v1",
-		"control/control.checkout.offer.resolve.v1",
+		"control/control.catalog.offer.resolve.v1",
 		"control/control.v1.eula.get",
 		"fleet/fleet.v1.query.preflight.upload-datapacks",
 		"commerce/commerce.checkout.normal.quote.v1",
@@ -93,7 +93,7 @@ func TestNormalCheckoutCompositionFailsClosedAtSessionsPreflight(t *testing.T) {
 			switch target + "/" + function {
 			case "sessions/sessions.gene.route-intent.parse.v1":
 				return normalCheckoutRouteIntent(t, payload, false), nil
-			case "control/control.checkout.offer.resolve.v1":
+			case "control/control.catalog.offer.resolve.v1":
 				return msgpack.Marshal(normalCheckoutOffer(image))
 			case "control/control.v1.eula.get":
 				if request["game_id"] != "minecraft" {
@@ -182,6 +182,7 @@ func testNormalCheckoutCompositionExactOwnerContracts(t *testing.T, failEffect, 
 	var calls []string
 	quoteCalls := 0
 	freeEffectCalls := 0
+	var genericAttestations []any
 	caller := CallFunc(func(target, function string, payload []byte) ([]byte, error) {
 		calls = append(calls, target+"/"+function)
 		var command map[string]any
@@ -200,6 +201,23 @@ func testNormalCheckoutCompositionExactOwnerContracts(t *testing.T, failEffect, 
 				facts["uploads_validated"] != true || facts["requires_eula"] != true {
 				t.Fatalf("Sessions checkout facts = %#v", facts)
 			}
+			owner := map[string]any{
+				"order_id": "order-1", "email": "player@example.test", "server_type": "paper",
+				"tier_id": "tier-1", "amount_cents": int64(777), "currency": "cad",
+				"description": "Minecraft Server (paper)", "age_confirmed": true,
+				"tos_accepted": true, "eula_accepted": true, "auto_redeem": true,
+				"config": map[string]any{
+					"username": "Player", "gamemode": "survival", "difficulty": "normal",
+					"pvp": "true", "hardcore": "false", "motd": "Hello",
+				},
+			}
+			if postAction || free {
+				owner["engine"], owner["version"] = "paper", "1.21.5"
+				config := owner["config"].(map[string]any)
+				config["upload_id"] = "upload-1"
+				config["datapack_ids"] = []any{"datapack-1", "datapack-2"}
+				config["mods_json"] = "[]"
+			}
 			return msgpack.Marshal(map[string]any{
 				"version": "sessions.checkout.preflight.v1", "http_status": int64(200),
 				"request_id": "checkout-request-1", "idempotency_key": "checkout-key-1",
@@ -208,22 +226,13 @@ func testNormalCheckoutCompositionExactOwnerContracts(t *testing.T, failEffect, 
 					"id": "claim-1", "email": "player@example.test", "token": "claim-token-1",
 					"created_at_unix": int64(1_750_000_000), "expires_at_unix": int64(1_750_007_200),
 				},
-				"owner": map[string]any{
-					"order_id": "order-1", "email": "player@example.test", "server_type": "paper",
-					"tier_id": "tier-1", "amount_cents": int64(777), "currency": "cad",
-					"description": "Minecraft Server (paper)", "age_confirmed": true,
-					"tos_accepted": true, "eula_accepted": true, "auto_redeem": true,
-					"config": map[string]any{
-						"username": "Player", "gamemode": "survival", "difficulty": "normal",
-						"pvp": "true", "hardcore": "false", "motd": "Hello",
-					},
-				},
+				"owner": owner,
 			})
 		case "control/control.v1.checkout_rate_limit.consume":
 			return msgpack.Marshal(map[string]any{
 				"version": "sessions.control/v1", "allowed": true, "http_status": int64(200),
 			})
-		case "control/control.checkout.offer.resolve.v1":
+		case "control/control.catalog.offer.resolve.v1":
 			if command["version"] != "sessions.control/v1" || command["server_type"] != "paper" {
 				t.Fatalf("Control offer request = %#v", command)
 			}
@@ -267,6 +276,27 @@ func testNormalCheckoutCompositionExactOwnerContracts(t *testing.T, failEffect, 
 				"discount_cents": discount, "amount_cents": amount,
 				"currency": "usd", "quoted_at_unix": int64(1_750_000_000),
 			}})
+		case "commerce/commerce.discount.quote.v1":
+			evidence := command["price_evidence"].(map[string]any)
+			if command["subject_id"] != "checkout-request-1" ||
+				command["now_unix"] != int64(1_750_000_000) ||
+				evidence["version"] != "commerce.caller-bound-price-evidence.v1" ||
+				evidence["source"] != "sessions.checkout.offer.v1" ||
+				evidence["evidence_id"] != "control-offer:minecraft:paper:tier-1:9" ||
+				evidence["revision"] != int64(9) ||
+				evidence["subject_id"] != "checkout-request-1" ||
+				evidence["original_amount_cents"] != int64(1200) || evidence["currency"] != "usd" {
+				t.Fatalf("Commerce generic price evidence = %#v", command)
+			}
+			discount, amount := int64(0), int64(1200)
+			if free {
+				discount, amount = 1200, 0
+			}
+			return msgpack.Marshal(map[string]any{"ok": true, "value": map[string]any{
+				"version": "commerce.discount-quote-fact.v1", "subject_id": "checkout-request-1",
+				"original_amount_cents": int64(1200), "discount_cents": discount,
+				"amount_cents": amount, "currency": "usd",
+			}})
 		case "identity/identity.checkout.authorize-register.v1":
 			claim := command["claim"].(map[string]any)
 			if claim["created_at"] != int64(1_750_000_000_000) ||
@@ -282,15 +312,39 @@ func testNormalCheckoutCompositionExactOwnerContracts(t *testing.T, failEffect, 
 					"claim_id": "claim-1", "age_confirmed": true, "tos_accepted": true,
 				},
 			}})
-		case "fleet/fleet.v1.command.checkout.reserve":
-			plan := command["launch_plan"].(map[string]any)
-			if plan["version"] != "fleet.checkout.launch-plan.v1" ||
+		case "identity/identity.v1.attestation.put":
+			record := command["record"].(map[string]any)
+			value := record["value"].(map[string]any)
+			if command["request_id"] == "" || record["id"] == "" ||
+				record["subject_id"] != "claim-1" || value["revision"] != "sessions.checkout.v1" ||
+				value["accepted_at"] != int64(1_750_000_000_000) {
+				t.Fatalf("Identity generic attestation request = %#v", command)
+			}
+			genericAttestations = append(genericAttestations, value)
+			return msgpack.Marshal(map[string]any{"ok": true, "value": record})
+		case "identity/identity.subject.authorize.v1":
+			if command["version"] != "identity.subject-authorization.v1" ||
+				command["token"] != "claim-token-1" || command["purpose"] != "login" ||
+				command["now"] != int64(1_750_000_000_000) || len(genericAttestations) != 3 {
+				t.Fatalf("Identity generic authorization request = %#v attestations=%#v", command, genericAttestations)
+			}
+			return msgpack.Marshal(map[string]any{"ok": true, "value": map[string]any{
+				"version": "identity.subject-authorization.v1", "subject_id": "claim-1",
+				"email": "player@example.test", "credential_purpose": "login",
+				"credential_expires_at": int64(1_750_007_200_000), "attestations": genericAttestations,
+			}})
+		case "fleet/fleet.workload.capacity.reserve.v1":
+			plan := command["plan"].(map[string]any)
+			if command["id"] != "checkout-request-1:fleet-reserve" ||
+				command["reservation_id"] != "order-1-reservation" || command["subject_id"] != "order-1" ||
+				command["workload_id"] != "order-1-server" ||
+				plan["version"] != "fleet.workload.capacity-launch-plan.v1" ||
 				plan["cpu_millis"] != int64(1500) || plan["memory_mb"] != int64(1536) ||
 				plan["runtime_revision"] != int64(7) || plan["control_revision"] != int64(9) {
 				t.Fatalf("Fleet launch plan = %#v", plan)
 			}
 			return msgpack.Marshal(checkoutFleetDecision(image))
-		case "fleet/fleet.v1.command.checkout.recheck":
+		case "fleet/fleet.workload.capacity.recheck.v1":
 			if command["lease_id"] != "checkout:order-1-reservation:lease:3" ||
 				command["expected_revision"] != int64(3) {
 				t.Fatalf("Fleet recheck fence = %#v", command)
@@ -477,6 +531,10 @@ func testNormalCheckoutCompositionExactOwnerContracts(t *testing.T, failEffect, 
 			if postAction {
 				return msgpack.Marshal(map[string]any{"ok": true, "value": map[string]any{
 					"terminal": true,
+					"checkout": map[string]any{
+						"mode": "paid", "claim_token": "claim-token-1",
+						"discount_cents": int64(0), "client_secret": "pi_secret_123",
+					},
 					"post_actions": []any{
 						map[string]any{
 							"kind": "storage.checkout.uploads.release", "order_id": "order-1",
@@ -507,6 +565,10 @@ func testNormalCheckoutCompositionExactOwnerContracts(t *testing.T, failEffect, 
 				}
 				return msgpack.Marshal(map[string]any{"ok": true, "value": map[string]any{
 					"terminal": true,
+					"checkout": map[string]any{
+						"mode": "free", "claim_token": "claim-token-1",
+						"discount_cents": int64(1200), "free": true, "order_id": "order-1",
+					},
 					"legacy_response": map[string]any{
 						"claim_token": "claim-token-1", "discount_cents": int64(1200),
 						"free": true, "order_id": "order-1",
@@ -536,12 +598,18 @@ func testNormalCheckoutCompositionExactOwnerContracts(t *testing.T, failEffect, 
 			}
 			return msgpack.Marshal(map[string]any{"ok": true, "value": map[string]any{
 				"terminal": true,
+				"checkout": map[string]any{
+					"mode": "paid", "claim_token": "claim-token-1",
+					"discount_cents": int64(0), "client_secret": "pi_secret_123",
+					"free": false, "reserved": false, "gift": false,
+				},
 				"legacy_response": map[string]any{
 					"claim_token": "claim-token-1", "discount_cents": int64(0),
-					"client_secret": "pi_secret_123",
+					"client_secret": "pi_secret_123", "free": false,
+					"reserved": false, "gift": false,
 				},
 			}})
-		case "fleet/fleet.v1.command.capacity.release":
+		case "fleet/fleet.workload.capacity.release.v1":
 			if !failEffect || command["reservation_id"] != "order-1-reservation" ||
 				command["lease_id"] != "checkout:order-1-reservation:lease:3" ||
 				command["expected_revision"] != int64(3) {
@@ -634,11 +702,16 @@ func testNormalCheckoutCompositionExactOwnerContracts(t *testing.T, failEffect, 
 	}
 	wantCalls := append(normalCheckoutGatherCalls(),
 		"control/control.v1.checkout_rate_limit.consume",
-		"control/control.checkout.offer.resolve.v1",
+		"control/control.catalog.offer.resolve.v1",
 		"commerce/commerce.checkout.normal.quote.v1",
+		"commerce/commerce.discount.quote.v1",
 		"identity/identity.checkout.authorize-register.v1",
-		"fleet/fleet.v1.command.checkout.reserve",
-		"fleet/fleet.v1.command.checkout.recheck",
+		"identity/identity.v1.attestation.put",
+		"identity/identity.v1.attestation.put",
+		"identity/identity.v1.attestation.put",
+		"identity/identity.subject.authorize.v1",
+		"fleet/fleet.workload.capacity.reserve.v1",
+		"fleet/fleet.workload.capacity.recheck.v1",
 		"commerce/commerce.checkout.normal.admit.v1",
 		"commerce/commerce.checkout.effect.apply.v1",
 	)
@@ -658,7 +731,7 @@ func testNormalCheckoutCompositionExactOwnerContracts(t *testing.T, failEffect, 
 		)
 	}
 	if failEffect {
-		wantCalls = append(wantCalls, "fleet/fleet.v1.command.capacity.release")
+		wantCalls = append(wantCalls, "fleet/fleet.workload.capacity.release.v1")
 	}
 	if strings.Join(calls, "\n") != strings.Join(wantCalls, "\n") {
 		t.Fatalf("calls = %#v, want %#v", calls, wantCalls)
@@ -670,13 +743,13 @@ func checkoutFleetDecision(image string) map[string]any {
 		"reserved": true, "queued": false, "requires_recheck": true,
 		"revision": int64(3), "lease_id": "checkout:order-1-reservation:lease:3",
 		"reservation": map[string]any{
-			"id": "order-1-reservation", "order_id": "order-1",
-			"server_id": "order-1-server",
-			"node_id":   "node-1",
-			"revision":  int64(3), "lease_id": "checkout:order-1-reservation:lease:3",
+			"id": "order-1-reservation", "subject_id": "order-1",
+			"workload_id": "order-1-server",
+			"node_id":     "node-1",
+			"revision":    int64(3), "lease_id": "checkout:order-1-reservation:lease:3",
 		},
-		"launch_plan": map[string]any{
-			"version": "fleet.checkout.launch-plan.v1",
+		"plan": map[string]any{
+			"version": "fleet.workload.capacity-launch-plan.v1",
 			"image": map[string]any{
 				"reference": image, "approval_id": "approval-1",
 				"policy_version": "sessions-runtime-v1", "approved": true,

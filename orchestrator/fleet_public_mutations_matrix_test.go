@@ -84,6 +84,9 @@ func TestFleetPublicMutationMatrixUsesExactOwners(t *testing.T) {
 					"control/control.v1.query",
 					"control/control.v1.config.validate",
 				)
+				if test.route == "deploy" || test.route == "schedule" {
+					required = append(required, "identity/identity.route-principal.resolve.v1")
+				}
 			}
 			required = append(required,
 				"fleet/fleet.v1.command.gene."+test.route,
