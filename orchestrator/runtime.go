@@ -52,6 +52,7 @@ func (f AppCallFunc) AppCall(app, instance, cell, provider string, payload []byt
 type Options struct {
 	Script    string
 	Timeout   time.Duration
+	Config    map[string]any
 	Caller    Caller
 	AppCaller AppCaller
 	Logf      func(format string, args ...any)
@@ -109,7 +110,10 @@ func New(options Options) (*Runtime, error) {
 		l.Close()
 		return nil, err
 	}
-	runtime.installPulpModule()
+	if err := runtime.installPulpModule(options.Config); err != nil {
+		l.Close()
+		return nil, err
+	}
 	if err := runtime.runWithTimeout(func() error {
 		return l.DoString(options.Script)
 	}); err != nil {
@@ -229,7 +233,7 @@ func (r *Runtime) openSandbox() error {
 	return nil
 }
 
-func (r *Runtime) installPulpModule() {
+func (r *Runtime) installPulpModule(config map[string]any) error {
 	module := r.lua.SetFuncs(r.lua.NewTable(), map[string]lua.LGFunction{
 		"array":            r.luaArray,
 		"on":               r.luaOn,
@@ -249,7 +253,13 @@ func (r *Runtime) installPulpModule() {
 		"state_set":        r.luaStateSet,
 		"log":              r.luaLog,
 	})
+	configValue, err := goToLua(r.lua, config, 0)
+	if err != nil {
+		return fmt.Errorf("lower Lua application config: %w", err)
+	}
+	module.RawSetString("config", configValue)
 	r.lua.SetGlobal("pulp", module)
+	return nil
 }
 
 // luaArray marks a Lua table as a MessagePack array. It exists solely to

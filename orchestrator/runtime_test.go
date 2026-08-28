@@ -84,6 +84,33 @@ end)
 	}
 }
 
+func TestRuntimeExposesApplicationConfigToLua(t *testing.T) {
+	runtime, err := New(Options{
+		Config: map[string]any{
+			"service_url": "https://service.example",
+			"retry":       map[string]any{"limit": int64(3)},
+		},
+		Script: `
+pulp.on("config", function()
+  return { service_url = pulp.config.service_url, retry_limit = pulp.config.retry.limit }
+end)
+`,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer runtime.Close()
+
+	result, err := runtime.Dispatch(DispatchRequest{Event: "config"})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	value := result.Value.(map[string]any)
+	if value["service_url"] != "https://service.example" || value["retry_limit"] != int64(3) {
+		t.Fatalf("config result = %#v", value)
+	}
+}
+
 func TestRuntimeRejectsUnsafeGenericNumbersBeforeLua(t *testing.T) {
 	runtime, err := New(Options{
 		Script: `pulp.on("echo", function(payload) return payload end)`,

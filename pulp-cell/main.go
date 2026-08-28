@@ -12,8 +12,9 @@ import (
 )
 
 type config struct {
-	Script    string `json:"script"`
-	TimeoutMS int    `json:"timeout_ms"`
+	Script    string         `json:"script"`
+	TimeoutMS int            `json:"timeout_ms"`
+	Values    map[string]any `json:"values"`
 }
 
 var luaRuntime *orchestrator.Runtime
@@ -41,6 +42,7 @@ func init() {
 		runtime, err := orchestrator.New(orchestrator.Options{
 			Script:    cfg.Script,
 			Timeout:   timeout,
+			Config:    cfg.Values,
 			Caller:    pulpCaller{},
 			AppCaller: pulpCaller{},
 			Logf:      log.Printf,
