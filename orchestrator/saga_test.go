@@ -237,6 +237,47 @@ end)
 	}
 }
 
+func TestRuntimeExecuteSagaReentersPendingAndCachesTerminalOutcome(t *testing.T) {
+	runtime, err := New(Options{Script: `
+pulp.on("settle", function()
+  local count = (pulp.state_get("settle-count") or 0) + 1
+  pulp.state_set("settle-count", count)
+  if count == 1 then
+    return { status = "pending", effects = {{ id = "effect-1", kind = "email.send", idempotency_key = "email:1", payload = pulp.pack({ template = "ready" }), acknowledgement = { status = "pending" } }} }
+  end
+  return { status = "completed", result = pulp.pack({ count = count }) }
+end)
+`})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer runtime.Close()
+
+	request, err := workflow.NewSagaRequest("settle", "settle-request", "settle:key", map[string]any{})
+	if err != nil {
+		t.Fatalf("NewSagaRequest: %v", err)
+	}
+	first, err := runtime.ExecuteSaga(request)
+	if err != nil || first.Status != workflow.SagaPending {
+		t.Fatalf("first ExecuteSaga = %#v, %v", first, err)
+	}
+	second, err := runtime.ExecuteSaga(request)
+	if err != nil || second.Status != workflow.SagaCompleted {
+		t.Fatalf("second ExecuteSaga = %#v, %v", second, err)
+	}
+	third, err := runtime.ExecuteSaga(request)
+	if err != nil || !bytes.Equal(second.Result, third.Result) {
+		t.Fatalf("terminal replay = %#v, %v", third, err)
+	}
+	type countResult struct {
+		Count int64 `msgpack:"count"`
+	}
+	decoded, err := workflow.DecodeResult[countResult](third)
+	if err != nil || decoded.Count != 2 {
+		t.Fatalf("terminal count = %#v, %v", decoded, err)
+	}
+}
+
 func TestRuntimeCurrentSagaIsExactAndScopedToSagaExecution(t *testing.T) {
 	runtime, err := New(Options{Script: `
 pulp.on("forward", function()

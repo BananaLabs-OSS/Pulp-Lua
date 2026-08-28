@@ -15,9 +15,11 @@ type sagaRecord struct {
 
 // ExecuteSaga runs one versioned Lua workflow and returns only a validated
 // durable outcome. The caller must use the same request and idempotency IDs on
-// retries; the runtime returns the original result rather than replaying Lua
-// sequencing. Durable cross-restart idempotency remains the state owner's
-// responsibility, represented by the request and effect keys on the wire.
+// retries. Terminal outcomes are cached, while pending outcomes re-enter the
+// handler so it can observe durable effect acknowledgements written after the
+// previous invocation. Durable cross-restart idempotency remains the state
+// owner's responsibility, represented by the request and effect keys on the
+// wire.
 func (r *Runtime) ExecuteSaga(request workflow.SagaRequest) (workflow.SagaResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -33,7 +35,9 @@ func (r *Runtime) ExecuteSaga(request workflow.SagaRequest) (workflow.SagaResult
 		if record.requestID != request.RequestID {
 			return workflow.SagaResult{}, fmt.Errorf("saga idempotency key is already bound to request %q", record.requestID)
 		}
-		return record.result, nil
+		if record.result.Status != workflow.SagaPending {
+			return record.result, nil
+		}
 	}
 	handler := r.handlers[request.Name]
 	if handler == nil {
