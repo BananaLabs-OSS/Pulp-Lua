@@ -800,7 +800,7 @@ func TestServerMutationWorkflowsV4RuntimeWhitelistResolvesOnceAndProjectsDurable
 						puts++
 						storedKey, storedPayload = request.Key, append([]byte(nil), request.Payload...)
 						return msgpack.Marshal(map[string]any{"registry_revision": int64(1)})
-					case "minecraft-profile-resolver/player-identity.v1.resolve":
+					case "player-identity-resolver/player-identity.v1.resolve":
 						resolves++
 						var request struct {
 							Version    string `msgpack:"version"`
@@ -939,7 +939,7 @@ func TestServerMutationWorkflowsV4RuntimeWhitelistRejectsPlatformIdentityMismatc
 			switch target + "/" + function {
 			case "configuration-registry/configuration-registry.v1.fact.get":
 				return msgpack.Marshal(map[string]any{"found": false})
-			case "minecraft-profile-resolver/player-identity.v1.resolve":
+			case "player-identity-resolver/player-identity.v1.resolve":
 				return msgpack.Marshal(map[string]any{
 					"version": "player-identity.v1",
 					"uuid":    "8667ba71-b85a-4004-af54-457a9734eed7",
