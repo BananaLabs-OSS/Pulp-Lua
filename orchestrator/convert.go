@@ -181,6 +181,8 @@ func goToLua(l *lua.LState, value any, depth int) (lua.LValue, error) {
 		return lua.LBool(typed), nil
 	case string:
 		return lua.LString(typed), nil
+	case msgpack.RawMessage:
+		return lua.LString(string(typed)), nil
 	case []byte:
 		return lua.LString(string(typed)), nil
 	case int:

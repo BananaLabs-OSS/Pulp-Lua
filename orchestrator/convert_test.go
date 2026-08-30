@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vmihailenco/msgpack/v5"
 	lua "github.com/yuin/gopher-lua"
 )
 
@@ -20,6 +21,20 @@ func TestGoToLuaLowersTimeAsCanonicalUTCString(t *testing.T) {
 	}
 	if want := lua.LString("2026-08-30T19:12:13.456Z"); got != want {
 		t.Fatalf("goToLua(time.Time) = %#v, want %#v", got, want)
+	}
+}
+
+func TestGoToLuaPreservesRawMessageAsBytes(t *testing.T) {
+	state := lua.NewState()
+	defer state.Close()
+
+	value := msgpack.RawMessage{0x81, 0xa1, 'x', 0x01}
+	got, err := goToLua(state, value, 0)
+	if err != nil {
+		t.Fatalf("goToLua(msgpack.RawMessage): %v", err)
+	}
+	if want := lua.LString(string(value)); got != want {
+		t.Fatalf("goToLua(msgpack.RawMessage) = %#v, want raw bytes %#v", got, want)
 	}
 }
 
