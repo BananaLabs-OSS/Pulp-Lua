@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"time"
 
 	"github.com/vmihailenco/msgpack/v5"
 
@@ -174,6 +175,8 @@ func goToLua(l *lua.LState, value any, depth int) (lua.LValue, error) {
 		return lua.LNil, nil
 	}
 	switch typed := value.(type) {
+	case time.Time:
+		return lua.LString(typed.UTC().Format(time.RFC3339Nano)), nil
 	case bool:
 		return lua.LBool(typed), nil
 	case string:
