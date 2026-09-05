@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/vmihailenco/msgpack/v5"
@@ -26,7 +27,7 @@ func TestSessionsPublicCatalogV1UsesGenericControlProjection(t *testing.T) {
 				"version": "sessions.control/v1",
 				"games": []any{map[string]any{
 					"id": "minecraft", "name": "Minecraft", "enabled": true, "visible": true,
-					"primary_template": "vanilla", "icon": "minecraft", "tagline": "Build together",
+					"primary_template": "vanilla", "icon": "", "tagline": "Build together",
 					"description": "A shared world", "tags": []any{}, "max_players": int64(20),
 				}},
 				"tiers": []any{map[string]any{
@@ -55,14 +56,17 @@ func TestSessionsPublicCatalogV1UsesGenericControlProjection(t *testing.T) {
 		t.Fatalf("catalog response = %#v", result.Value)
 	}
 	var response struct {
-		Status uint32            `msgpack:"status"`
+		Status  uint32            `msgpack:"status"`
 		Headers map[string]string `msgpack:"headers"`
-		Body   string             `msgpack:"body"`
+		Body    string            `msgpack:"body"`
 	}
 	if err := msgpack.Unmarshal([]byte(packed), &response); err != nil {
 		t.Fatal(err)
 	}
 	if response.Status != 200 || response.Headers["Content-Type"] != "application/json" || response.Body == "" {
 		t.Fatalf("catalog response = %#v", response)
+	}
+	if !strings.Contains(response.Body, `"icon":""`) {
+		t.Fatalf("catalog response did not preserve an empty optional icon: %s", response.Body)
 	}
 }
