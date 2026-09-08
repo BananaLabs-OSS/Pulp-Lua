@@ -183,6 +183,7 @@ func serverMutationProjectionWireV4(t *testing.T, status int64, body any) []byte
 
 func TestServerMutationWorkflowsV4RuntimeBuildsCanonicalHostPayloadAndRejectsTamper(t *testing.T) {
 	authorization, commandID, workload, node, now, minecraft := serverMutationSettingsRouteValues()
+	ownerNode := map[string]any{"version": "contracts.v1", "id": map[string]any{"version": "contracts.v1", "value": "fleet-node-remote"}}
 	first, err := msgpack.Marshal(serverMutationSettingsRouteA{authorization, commandID, workload, node, now, minecraft})
 	if err != nil {
 		t.Fatal(err)
@@ -206,7 +207,7 @@ func TestServerMutationWorkflowsV4RuntimeBuildsCanonicalHostPayloadAndRejectsTam
 			return msgpack.Marshal(map[string]any{"registry_revision": int64(1)})
 		case "runtime-control/runtime-control.v1.runtime.get":
 			return msgpack.Marshal(map[string]any{
-				"version": "runtime-control.v1", "workload": workload, "node": node, "generation": int64(7), "revision": int64(1),
+				"version": "runtime-control.v1", "workload": workload, "node": ownerNode, "generation": int64(7), "revision": int64(1),
 			})
 		case "runtime-control/runtime-control.v1.action.request":
 			var request serverMutationRuntimeActionRequestV4
@@ -232,6 +233,9 @@ func TestServerMutationWorkflowsV4RuntimeBuildsCanonicalHostPayloadAndRejectsTam
 				body["workload"] == nil || body["node"] == nil || body["payload"] == nil ||
 				body["projection"] != nil || envelope["authorization"] != nil {
 				return nil, fmt.Errorf("canonical host envelope = %#v", envelope)
+			}
+			if !reflect.DeepEqual(body["node"], ownerNode) {
+				return nil, fmt.Errorf("host node = %#v, want runtime owner node %#v", body["node"], ownerNode)
 			}
 			accepted = append(accepted, append([]byte(nil), request.Payload...))
 			identities = append(identities, request.ID.Value+"|"+request.Idempotency.Value)
