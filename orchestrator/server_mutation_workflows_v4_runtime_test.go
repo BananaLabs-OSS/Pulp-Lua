@@ -181,6 +181,47 @@ func serverMutationProjectionWireV4(t *testing.T, status int64, body any) []byte
 	return projection
 }
 
+func serverMutationFleetSettlementResultV1(operation string) ([]byte, error) {
+	ownerOperation := map[string]string{"minecraft.settings.apply": "settings", "minecraft.gamerules.apply": "gamerules", "minecraft.access.apply": "access"}[operation]
+	return msgpack.Marshal(map[string]any{
+		"version": "fleet.runtime-mutation-attestation.v1", "workload_id": "workload-1", "operation": ownerOperation,
+		"fleet_generation": strings.Repeat("a", 64), "attestation_sha256": strings.Repeat("b", 64), "completed_at": "2026-07-26T12:00:01Z",
+	})
+}
+
+func validateServerMutationFleetSettlementV1(wire []byte, operation string) error {
+	var request map[string]any
+	if err := msgpack.Unmarshal(wire, &request); err != nil {
+		return err
+	}
+	if len(request) != 3 || request["version"] != "fleet.server-mutation-settlement-request.v1" {
+		return fmt.Errorf("Fleet settlement request = %#v", request)
+	}
+	var receipt []byte
+	switch exact := request["operation_receipt"].(type) {
+	case []byte:
+		receipt = exact
+	case string:
+		receipt = []byte(exact)
+	}
+	if len(receipt) == 0 {
+		return fmt.Errorf("Fleet settlement operation receipt is missing")
+	}
+	command, ok := request["command"].(map[string]any)
+	sum := sha256.Sum256(receipt)
+	if !ok || len(command) != 1 || command["id"] != "fleet-server-mutation-settle:"+hex.EncodeToString(sum[:]) {
+		return fmt.Errorf("Fleet settlement command = %#v", command)
+	}
+	var attestation map[string]any
+	if err := msgpack.Unmarshal(receipt, &attestation); err != nil {
+		return err
+	}
+	if attestation["operation"] != operation {
+		return fmt.Errorf("Fleet settlement operation receipt = %#v", attestation)
+	}
+	return nil
+}
+
 func TestServerMutationWorkflowsV4RuntimeBuildsCanonicalHostPayloadAndRejectsTamper(t *testing.T) {
 	authorization, commandID, workload, node, now, minecraft := serverMutationSettingsRouteValues()
 	ownerNode := map[string]any{"version": "contracts.v1", "id": map[string]any{"version": "contracts.v1", "value": "fleet-node-remote"}}
@@ -253,6 +294,11 @@ func TestServerMutationWorkflowsV4RuntimeBuildsCanonicalHostPayloadAndRejectsTam
 			return serverMutationHostResultV4(lastOperation)
 		case "runtime-control/runtime-control.v1.effect.receipt.apply":
 			return msgpack.Marshal(map[string]any{"version": "runtime-control.v1", "status": "succeeded"})
+		case "fleet/fleet.v1.command.server-mutation.settle.v1":
+			if err := validateServerMutationFleetSettlementV1(wire, lastOperation); err != nil {
+				return nil, err
+			}
+			return serverMutationFleetSettlementResultV1(lastOperation)
 		default:
 			return nil, fmt.Errorf("unexpected owner call %s/%s", target, function)
 		}
@@ -387,6 +433,11 @@ func TestServerMutationWorkflowsV4RuntimeProjectionParityAcrossSupportedOperatio
 			return serverMutationHostResultV4(lastOperation)
 		case "runtime-control/runtime-control.v1.effect.receipt.apply":
 			return msgpack.Marshal(map[string]any{"version": "runtime-control.v1", "status": "succeeded"})
+		case "fleet/fleet.v1.command.server-mutation.settle.v1":
+			if err := validateServerMutationFleetSettlementV1(wire, lastOperation); err != nil {
+				return nil, err
+			}
+			return serverMutationFleetSettlementResultV1(lastOperation)
 		case "workload-provisioning/workload-provisioning.v1.get":
 			return msgpack.Marshal(map[string]any{"version": "workload-provisioning.v1", "workload": workload, "generation": int64(3)})
 		case "workload-provisioning/workload-provisioning.v1.reconfigure":
@@ -576,6 +627,11 @@ func TestServerMutationWorkflowsV4RuntimeReplaysDurableOperationReceiptWithoutHo
 				return msgpack.Marshal(map[string]any{
 					"version": "runtime-control.v1", "status": "succeeded",
 				})
+			case "fleet/fleet.v1.command.server-mutation.settle.v1":
+				if err := validateServerMutationFleetSettlementV1(wire, lastOperation); err != nil {
+					return nil, err
+				}
+				return serverMutationFleetSettlementResultV1(lastOperation)
 			default:
 				return nil, fmt.Errorf("unexpected owner call %s/%s", target, function)
 			}
@@ -891,6 +947,11 @@ func TestServerMutationWorkflowsV4RuntimeWhitelistResolvesOnceAndProjectsDurable
 						return msgpack.Marshal(map[string]any{
 							"version": "runtime-control.v1", "status": "succeeded",
 						})
+					case "fleet/fleet.v1.command.server-mutation.settle.v1":
+						if err := validateServerMutationFleetSettlementV1(wire, "minecraft.access.apply"); err != nil {
+							return nil, err
+						}
+						return serverMutationFleetSettlementResultV1("minecraft.access.apply")
 					default:
 						return nil, fmt.Errorf("unexpected owner call %s/%s", target, function)
 					}
