@@ -78,12 +78,40 @@ func normalCheckoutOffer(image string) map[string]any {
 	}
 }
 
+// normalCheckoutResolverCaller models the immutable runtime fact owned by the
+// separately composed minecraft-resolver application. Checkout intentionally
+// crosses the application boundary after Control approves an offer, so tests
+// of the split production workflow must provide that boundary explicitly.
+func normalCheckoutResolverCaller(t *testing.T) AppCaller {
+	t.Helper()
+	return AppCallFunc(func(app, instance, cell, provider string, payload []byte) ([]byte, error) {
+		if app != "minecraft-resolver" || instance != "primary" || cell != "minecraft-resolver" || provider != "minecraft-resolver.resolve.v1" {
+			t.Fatalf("unexpected application call %s/%s/%s/%s", app, instance, cell, provider)
+		}
+		var request map[string]any
+		if err := msgpack.Unmarshal(payload, &request); err != nil {
+			t.Fatalf("decode resolver request: %v", err)
+		}
+		if request["crossplay"] != false {
+			t.Fatalf("resolver request = %#v", request)
+		}
+		return msgpack.Marshal(map[string]any{
+			"version": "minecraft-resolver.environment.v1",
+			"digest":  strings.Repeat("a", 64),
+			"environment": map[string]any{
+				"ENGINE": "paper",
+			},
+		})
+	})
+}
+
 func TestNormalCheckoutCompositionFailsClosedAtSessionsPreflight(t *testing.T) {
 	const image = "registry.example/paper@sha256:" +
 		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	var calls []string
 	runtime, err := New(Options{
-		Script: evolutionLua(t),
+		Script:    evolutionLua(t),
+		AppCaller: normalCheckoutResolverCaller(t),
 		Caller: CallFunc(func(target, function string, payload []byte) ([]byte, error) {
 			calls = append(calls, target+"/"+function)
 			var request map[string]any
@@ -624,7 +652,7 @@ func testNormalCheckoutCompositionExactOwnerContracts(t *testing.T, failEffect, 
 		}
 	})
 
-	runtime, err := New(Options{Script: evolutionLua(t), Caller: caller})
+	runtime, err := New(Options{Script: evolutionLua(t), Caller: caller, AppCaller: normalCheckoutResolverCaller(t)})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
