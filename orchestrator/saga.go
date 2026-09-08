@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/BananaLabs-OSS/Fiber/pulp/workflow"
@@ -19,6 +20,10 @@ type sagaRecord struct {
 // sequencing. Durable cross-restart idempotency remains the state owner's
 // responsibility, represented by the request and effect keys on the wire.
 func (r *Runtime) ExecuteSaga(request workflow.SagaRequest) (workflow.SagaResult, error) {
+	return r.ExecuteSagaContext(context.Background(), request)
+}
+
+func (r *Runtime) ExecuteSagaContext(ctx context.Context, request workflow.SagaRequest) (workflow.SagaResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -59,7 +64,7 @@ func (r *Runtime) ExecuteSaga(request workflow.SagaRequest) (workflow.SagaResult
 	previousSaga := r.currentSaga
 	r.currentSaga = &request
 	defer func() { r.currentSaga = previousSaga }()
-	err = r.runWithTimeout(func() error {
+	err = r.runWithContextTimeout(ctx, func() error {
 		if err := r.lua.CallByParam(lua.P{
 			Fn: handler, NRet: 1, Protect: true,
 		}, payload); err != nil {
