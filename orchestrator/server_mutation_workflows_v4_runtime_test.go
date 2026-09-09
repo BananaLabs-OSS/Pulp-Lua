@@ -185,7 +185,7 @@ func serverMutationFleetSettlementResultV1(operation string) ([]byte, error) {
 	ownerOperation := map[string]string{"minecraft.settings.apply": "settings", "minecraft.gamerules.apply": "gamerules", "minecraft.access.apply": "access"}[operation]
 	return msgpack.Marshal(map[string]any{
 		"version": "fleet.runtime-mutation-attestation.v1", "workload_id": "workload-1", "operation": ownerOperation,
-		"fleet_generation": strings.Repeat("a", 64), "attestation_sha256": strings.Repeat("b", 64), "completed_at": "2026-07-26T12:00:01Z",
+		"fleet_generation": "fleet-live-v1:" + strings.Repeat("a", 64), "attestation_sha256": strings.Repeat("b", 64), "completed_at": "2026-07-26T12:00:01Z",
 	})
 }
 
