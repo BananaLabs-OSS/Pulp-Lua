@@ -49,6 +49,11 @@ func TestFleetPublicMutationMatrixUsesExactOwners(t *testing.T) {
 					return fleetWire(fleetAuthorizationContext())
 				case "sessions/sessions.gene.commerce-plan.map.v1":
 					return fleetWire(map[string]any{"ok": true, "value": fleetMappedPlan()})
+				case "sessions-identity-retention-binding/sessions.identity-server-binding.get.v1":
+					return fleetWire(map[string]any{
+						"found": true, "account_id": "historical-subject",
+						"server_id": "order-1-server", "order_id": "order-1",
+					})
 				case "control/control.v1.query":
 					return fleetWire(fleetControlProjection())
 				case "control/control.v1.config.validate":
@@ -85,7 +90,10 @@ func TestFleetPublicMutationMatrixUsesExactOwners(t *testing.T) {
 					"control/control.v1.config.validate",
 				)
 				if test.route == "deploy" || test.route == "schedule" {
-					required = append(required, "identity/identity.route-principal.resolve.v1")
+					required = append(required,
+						"identity/identity.route-principal.resolve.v1",
+						"sessions-identity-retention-binding/sessions.identity-server-binding.get.v1",
+					)
 				}
 			}
 			required = append(required,
