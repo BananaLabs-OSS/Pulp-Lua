@@ -571,14 +571,6 @@ func testNormalCheckoutCompositionExactOwnerContracts(t *testing.T, failEffect, 
 								"upload_id": "upload-1", "datapack_ids": "datapack-1,datapack-2",
 							},
 						},
-						map[string]any{
-							"kind": "sessions.checkout.resolve.prewarm", "order_id": "order-1",
-							"checkout_id": "checkout-request-1",
-							"compatibility": map[string]any{
-								"server_type": "paper", "engine": "paper", "version": "1.21.5",
-								"mods_json": "[]", "datapack_ids": "datapack-1,datapack-2",
-							},
-						},
 					},
 				}})
 			}
@@ -604,10 +596,6 @@ func testNormalCheckoutCompositionExactOwnerContracts(t *testing.T, failEffect, 
 					"post_actions": []any{
 						map[string]any{
 							"kind": "storage.checkout.uploads.release", "order_id": "order-1",
-							"checkout_id": "checkout-request-1", "compatibility": compatibility,
-						},
-						map[string]any{
-							"kind": "sessions.checkout.resolve.prewarm", "order_id": "order-1",
 							"checkout_id": "checkout-request-1", "compatibility": compatibility,
 						},
 						map[string]any{
@@ -676,12 +664,10 @@ func testNormalCheckoutCompositionExactOwnerContracts(t *testing.T, failEffect, 
 	} else if postAction || free {
 		expectedKinds := []string{
 			"storage.checkout.uploads.release",
-			"sessions.checkout.resolve.prewarm",
 		}
 		if free {
 			expectedKinds = []string{
 				"storage.checkout.uploads.release",
-				"sessions.checkout.resolve.prewarm",
 				"notification.checkout.order-confirmed",
 				"sessions.checkout.free-order.deploy",
 			}
