@@ -87,6 +87,7 @@ type Runtime struct {
 	currentSaga *workflow.SagaRequest
 	callContext context.Context
 	sagas       map[string]sagaRecord
+	scriptSHA   string
 }
 
 func New(options Options) (*Runtime, error) {
@@ -107,6 +108,7 @@ func New(options Options) (*Runtime, error) {
 		RegistryGrowStep: 256,
 		SkipOpenLibs:     true,
 	})
+	scriptDigest := sha256.Sum256([]byte(options.Script))
 	runtime := &Runtime{
 		lua:       l,
 		handlers:  map[string]*lua.LFunction{},
@@ -116,6 +118,7 @@ func New(options Options) (*Runtime, error) {
 		timeout:   options.Timeout,
 		logf:      options.Logf,
 		sagas:     map[string]sagaRecord{},
+		scriptSHA: hex.EncodeToString(scriptDigest[:]),
 	}
 	if err := runtime.openSandbox(); err != nil {
 		l.Close()
@@ -166,7 +169,7 @@ func (r *Runtime) DispatchContext(ctx context.Context, request DispatchRequest) 
 		handler = r.handlers["*"]
 	}
 	if handler == nil {
-		return DispatchResult{}, fmt.Errorf("no Lua handler for event %q", request.Event)
+		return DispatchResult{}, fmt.Errorf("no Lua handler for event %q (registered=%d script_sha256=%s)", request.Event, len(r.handlers), r.scriptSHA)
 	}
 
 	payload, err := goToLua(r.lua, request.Payload, 0)
