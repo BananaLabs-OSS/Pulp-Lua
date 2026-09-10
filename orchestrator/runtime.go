@@ -26,6 +26,12 @@ type Caller interface {
 	Call(target, function string, payload []byte) ([]byte, error)
 }
 
+// ContextCaller is an optional, backwards-compatible caller extension. Hosts
+// implementing it receive the dispatch deadline and cancellation signal.
+type ContextCaller interface {
+	CallContext(context.Context, string, string, []byte) ([]byte, error)
+}
+
 // AppCaller is the deliberately narrow cross-application call seam. The Pulp
 // host, not Lua, resolves the named application instance and verifies the
 // manifest-declared link before executing a provider. It is intentionally
@@ -33,6 +39,10 @@ type Caller interface {
 // ambient cross-application capability by accident.
 type AppCaller interface {
 	AppCall(app, instance, cell, provider string, payload []byte) ([]byte, error)
+}
+
+type ContextAppCaller interface {
+	AppCallContext(context.Context, string, string, string, string, []byte) ([]byte, error)
 }
 
 type CallFunc func(target, function string, payload []byte) ([]byte, error)
@@ -75,6 +85,7 @@ type Runtime struct {
 	logf        func(format string, args ...any)
 	current     *DispatchResult
 	currentSaga *workflow.SagaRequest
+	callContext context.Context
 	sagas       map[string]sagaRecord
 }
 
@@ -137,6 +148,10 @@ func (r *Runtime) Close() {
 }
 
 func (r *Runtime) Dispatch(request DispatchRequest) (DispatchResult, error) {
+	return r.DispatchContext(context.Background(), request)
+}
+
+func (r *Runtime) DispatchContext(ctx context.Context, request DispatchRequest) (DispatchResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -162,7 +177,7 @@ func (r *Runtime) Dispatch(request DispatchRequest) (DispatchResult, error) {
 	r.current = &result
 	defer func() { r.current = nil }()
 
-	err = r.runWithTimeout(func() error {
+	err = r.runWithContextTimeout(ctx, func() error {
 		if err := r.lua.CallByParam(lua.P{
 			Fn:      handler,
 			NRet:    1,
@@ -192,8 +207,18 @@ func (r *Runtime) Dispatch(request DispatchRequest) (DispatchResult, error) {
 }
 
 func (r *Runtime) runWithTimeout(fn func() error) error {
-	ctx, cancel := context.WithTimeout(context.Background(), r.timeout)
+	return r.runWithContextTimeout(context.Background(), fn)
+}
+
+func (r *Runtime) runWithContextTimeout(parent context.Context, fn func() error) error {
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, r.timeout)
 	defer cancel()
+	previous := r.callContext
+	r.callContext = ctx
+	defer func() { r.callContext = previous }()
 	r.lua.SetContext(ctx)
 	defer r.lua.RemoveContext()
 	return fn()
@@ -350,7 +375,13 @@ func (r *Runtime) luaCallRaw(l *lua.LState) int {
 	target := l.CheckString(1)
 	function := l.CheckString(2)
 	payload := []byte(l.OptString(3, ""))
-	response, err := r.caller.Call(target, function, payload)
+	var response []byte
+	var err error
+	if caller, ok := r.caller.(ContextCaller); ok {
+		response, err = caller.CallContext(r.callContext, target, function, payload)
+	} else {
+		response, err = r.caller.Call(target, function, payload)
+	}
 	if err != nil {
 		l.RaiseError("pulp.call_raw(%s, %s): %v", target, function, err)
 		return 0
@@ -405,7 +436,13 @@ func (r *Runtime) luaAppCallRaw(l *lua.LState) int {
 	}
 	// Never hand a host implementation an alias to Lua-owned backing memory.
 	payload = append([]byte(nil), payload...)
-	response, err := r.appCaller.AppCall(app, instance, cell, provider, payload)
+	var response []byte
+	var err error
+	if caller, ok := r.appCaller.(ContextAppCaller); ok {
+		response, err = caller.AppCallContext(r.callContext, app, instance, cell, provider, payload)
+	} else {
+		response, err = r.appCaller.AppCall(app, instance, cell, provider, payload)
+	}
 	if err != nil {
 		l.RaiseError("pulp.app_call_raw(%s, %s, %s, %s): %v", app, instance, cell, provider, err)
 		return 0

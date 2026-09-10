@@ -58,10 +58,28 @@ func serverMutationHostResultV4(operation string) ([]byte, error) {
 	if operation == "minecraft.recreate" {
 		kind, status, owner = "recreate", "recreating", "workload-provisioning"
 	}
-	output, err := msgpack.Marshal(map[string]any{
-		"version": "server-mutation-runtime-result.v1",
-		"kind":    kind, "status": status, "response": []byte(`{"ok":true}`),
-	})
+	var output []byte
+	var err error
+	if operation == "minecraft.world.backup" {
+		captured := []byte(`{"status":"captured"}`)
+		capturedSum := sha256.Sum256(captured)
+		object := map[string]any{
+			"version": "contracts.v1", "namespace": "sessions-worlds", "key": "backups/workload-1.zip",
+			"generation": int64(1), "sha256": strings.Repeat("a", 64), "size_bytes": int64(1024),
+		}
+		output, err = msgpack.Marshal(map[string]any{
+			"version": "world-artifact.v1", "operation": "backup", "artifact_kind": "world-artifact",
+			"object": object, "download": map[string]any{
+				"object": object, "url": "https://objects.example.test/backups/workload-1.zip", "expires_at_unix": int64(1785067320),
+			},
+			"applied": false, "output": captured, "output_sha256": hex.EncodeToString(capturedSum[:]),
+		})
+	} else {
+		output, err = msgpack.Marshal(map[string]any{
+			"version": "server-mutation-runtime-result.v1",
+			"kind":    kind, "status": status, "response": []byte(`{"ok":true}`),
+		})
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -163,8 +181,50 @@ func serverMutationProjectionWireV4(t *testing.T, status int64, body any) []byte
 	return projection
 }
 
+func serverMutationFleetSettlementResultV1(operation string) ([]byte, error) {
+	ownerOperation := map[string]string{"minecraft.settings.apply": "settings", "minecraft.gamerules.apply": "gamerules", "minecraft.access.apply": "access"}[operation]
+	return msgpack.Marshal(map[string]any{
+		"version": "fleet.runtime-mutation-attestation.v1", "workload_id": "workload-1", "operation": ownerOperation,
+		"fleet_generation": "fleet-live-v1:" + strings.Repeat("a", 64), "attestation_sha256": strings.Repeat("b", 64), "completed_at": "2026-07-26T12:00:01Z",
+	})
+}
+
+func validateServerMutationFleetSettlementV1(wire []byte, operation string) error {
+	var request map[string]any
+	if err := msgpack.Unmarshal(wire, &request); err != nil {
+		return err
+	}
+	if len(request) != 3 || request["version"] != "fleet.server-mutation-settlement-request.v1" {
+		return fmt.Errorf("Fleet settlement request = %#v", request)
+	}
+	var receipt []byte
+	switch exact := request["operation_receipt"].(type) {
+	case []byte:
+		receipt = exact
+	case string:
+		receipt = []byte(exact)
+	}
+	if len(receipt) == 0 {
+		return fmt.Errorf("Fleet settlement operation receipt is missing")
+	}
+	command, ok := request["command"].(map[string]any)
+	sum := sha256.Sum256(receipt)
+	if !ok || len(command) != 1 || command["id"] != "fleet-server-mutation-settle:"+hex.EncodeToString(sum[:]) {
+		return fmt.Errorf("Fleet settlement command = %#v", command)
+	}
+	var attestation map[string]any
+	if err := msgpack.Unmarshal(receipt, &attestation); err != nil {
+		return err
+	}
+	if attestation["operation"] != operation {
+		return fmt.Errorf("Fleet settlement operation receipt = %#v", attestation)
+	}
+	return nil
+}
+
 func TestServerMutationWorkflowsV4RuntimeBuildsCanonicalHostPayloadAndRejectsTamper(t *testing.T) {
 	authorization, commandID, workload, node, now, minecraft := serverMutationSettingsRouteValues()
+	ownerNode := map[string]any{"version": "contracts.v1", "id": map[string]any{"version": "contracts.v1", "value": "fleet-node-remote"}}
 	first, err := msgpack.Marshal(serverMutationSettingsRouteA{authorization, commandID, workload, node, now, minecraft})
 	if err != nil {
 		t.Fatal(err)
@@ -188,7 +248,7 @@ func TestServerMutationWorkflowsV4RuntimeBuildsCanonicalHostPayloadAndRejectsTam
 			return msgpack.Marshal(map[string]any{"registry_revision": int64(1)})
 		case "runtime-control/runtime-control.v1.runtime.get":
 			return msgpack.Marshal(map[string]any{
-				"version": "runtime-control.v1", "workload": workload, "generation": int64(7), "revision": int64(1),
+				"version": "runtime-control.v1", "workload": workload, "node": ownerNode, "generation": int64(7), "revision": int64(1),
 			})
 		case "runtime-control/runtime-control.v1.action.request":
 			var request serverMutationRuntimeActionRequestV4
@@ -215,6 +275,9 @@ func TestServerMutationWorkflowsV4RuntimeBuildsCanonicalHostPayloadAndRejectsTam
 				body["projection"] != nil || envelope["authorization"] != nil {
 				return nil, fmt.Errorf("canonical host envelope = %#v", envelope)
 			}
+			if !reflect.DeepEqual(body["node"], ownerNode) {
+				return nil, fmt.Errorf("host node = %#v, want runtime owner node %#v", body["node"], ownerNode)
+			}
 			accepted = append(accepted, append([]byte(nil), request.Payload...))
 			identities = append(identities, request.ID.Value+"|"+request.Idempotency.Value)
 			lastOperation, _ = body["operation"].(string)
@@ -231,6 +294,11 @@ func TestServerMutationWorkflowsV4RuntimeBuildsCanonicalHostPayloadAndRejectsTam
 			return serverMutationHostResultV4(lastOperation)
 		case "runtime-control/runtime-control.v1.effect.receipt.apply":
 			return msgpack.Marshal(map[string]any{"version": "runtime-control.v1", "status": "succeeded"})
+		case "fleet/fleet.v1.command.server-mutation.settle.v1":
+			if err := validateServerMutationFleetSettlementV1(wire, lastOperation); err != nil {
+				return nil, err
+			}
+			return serverMutationFleetSettlementResultV1(lastOperation)
 		default:
 			return nil, fmt.Errorf("unexpected owner call %s/%s", target, function)
 		}
@@ -247,6 +315,17 @@ func TestServerMutationWorkflowsV4RuntimeBuildsCanonicalHostPayloadAndRejectsTam
 			"version": "evolution.server-mutation-owner-adapter.v4", "operation": "minecraft.settings.apply",
 			"payload": route, "payload_sha256": digest, "projection": projection, "projection_sha256": projectionDigest,
 		}})
+	}
+	assertSettingsFailure := func(result workflow.DispatchResult, err error, class string) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("settings compatibility projection returned an error: %v", err)
+		}
+		value, ok := result.Value.(map[string]any)
+		body, bodyOK := value["body"].(map[string]any)
+		if !ok || value["status"] != int64(502) || !bodyOK || body["failure_class"] != class {
+			t.Fatalf("settings failure projection = %#v, want class %q", result.Value, class)
+		}
 	}
 	for _, route := range [][]byte{first, second, first, second} {
 		sum := sha256.Sum256(route)
@@ -279,9 +358,8 @@ func TestServerMutationWorkflowsV4RuntimeBuildsCanonicalHostPayloadAndRejectsTam
 		}
 	}
 
-	if _, err := dispatch(first, strings.Repeat("0", 64), projection, hex.EncodeToString(projectionSum[:])); err == nil || !strings.Contains(err.Error(), "AppCall payload digest does not match exact bytes") {
-		t.Fatalf("tampered digest was accepted: %v", err)
-	}
+	tampered, err := dispatch(first, strings.Repeat("0", 64), projection, hex.EncodeToString(projectionSum[:]))
+	assertSettingsFailure(tampered, err, "digest")
 	// An injected projection field and a cross-operation queued projection both
 	// fail in Lua before reaching runtime-control.
 	rawProjectionBody, err := msgpack.Marshal(projectionBody)
@@ -294,17 +372,15 @@ func TestServerMutationWorkflowsV4RuntimeBuildsCanonicalHostPayloadAndRejectsTam
 	}
 	injectedSum := sha256.Sum256(injected)
 	payloadSum := sha256.Sum256(first)
-	if _, err := dispatch(first, hex.EncodeToString(payloadSum[:]), injected, hex.EncodeToString(injectedSum[:])); err == nil || !strings.Contains(err.Error(), "legacy projection has unsupported field headers") {
-		t.Fatalf("injected projection was accepted: %v", err)
-	}
+	injectedResult, err := dispatch(first, hex.EncodeToString(payloadSum[:]), injected, hex.EncodeToString(injectedSum[:]))
+	assertSettingsFailure(injectedResult, err, "policy")
 	crossOperation, err := msgpack.Marshal(map[string]any{"status": int64(202), "body": map[string]any{"status": "backing_up"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	crossSum := sha256.Sum256(crossOperation)
-	if _, err := dispatch(first, hex.EncodeToString(payloadSum[:]), crossOperation, hex.EncodeToString(crossSum[:])); err == nil || !strings.Contains(err.Error(), "legacy projection status is not approved") {
-		t.Fatalf("cross-operation projection was accepted: %v", err)
-	}
+	crossResult, err := dispatch(first, hex.EncodeToString(payloadSum[:]), crossOperation, hex.EncodeToString(crossSum[:]))
+	assertSettingsFailure(crossResult, err, "policy")
 	missingProjectionMinecraft := map[string]any{
 		"version": "evolution.minecraft.server-mutation.v4", "kind": "settings-gamerules",
 		"body": map[string]any{"operation": "minecraft.settings.apply", "payload": map[string]any{"difficulty": "hard"}},
@@ -314,9 +390,8 @@ func TestServerMutationWorkflowsV4RuntimeBuildsCanonicalHostPayloadAndRejectsTam
 		t.Fatal(err)
 	}
 	missingSum := sha256.Sum256(missingProjectionRoute)
-	if _, err := dispatch(missingProjectionRoute, hex.EncodeToString(missingSum[:]), projection, hex.EncodeToString(projectionSum[:])); err == nil || !strings.Contains(err.Error(), "minecraft.body.projection is required") {
-		t.Fatalf("route without response-only projection was accepted: %v", err)
-	}
+	missingResult, err := dispatch(missingProjectionRoute, hex.EncodeToString(missingSum[:]), projection, hex.EncodeToString(projectionSum[:]))
+	assertSettingsFailure(missingResult, err, "policy")
 }
 
 func TestServerMutationWorkflowsV4RuntimeProjectionParityAcrossSupportedOperations(t *testing.T) {
@@ -330,7 +405,7 @@ func TestServerMutationWorkflowsV4RuntimeProjectionParityAcrossSupportedOperatio
 		case "configuration-registry/configuration-registry.v1.fact.put":
 			return msgpack.Marshal(map[string]any{"registry_revision": int64(1)})
 		case "runtime-control/runtime-control.v1.runtime.get":
-			return msgpack.Marshal(map[string]any{"version": "runtime-control.v1", "workload": workload, "generation": int64(7), "revision": int64(1)})
+			return msgpack.Marshal(map[string]any{"version": "runtime-control.v1", "workload": workload, "node": node, "generation": int64(7), "revision": int64(1)})
 		case "runtime-control/runtime-control.v1.action.request":
 			var request serverMutationRuntimeActionRequestV4
 			if err := msgpack.Unmarshal(wire, &request); err != nil {
@@ -358,6 +433,11 @@ func TestServerMutationWorkflowsV4RuntimeProjectionParityAcrossSupportedOperatio
 			return serverMutationHostResultV4(lastOperation)
 		case "runtime-control/runtime-control.v1.effect.receipt.apply":
 			return msgpack.Marshal(map[string]any{"version": "runtime-control.v1", "status": "succeeded"})
+		case "fleet/fleet.v1.command.server-mutation.settle.v1":
+			if err := validateServerMutationFleetSettlementV1(wire, lastOperation); err != nil {
+				return nil, err
+			}
+			return serverMutationFleetSettlementResultV1(lastOperation)
 		case "workload-provisioning/workload-provisioning.v1.get":
 			return msgpack.Marshal(map[string]any{"version": "workload-provisioning.v1", "workload": workload, "generation": int64(3)})
 		case "workload-provisioning/workload-provisioning.v1.reconfigure":
@@ -511,7 +591,7 @@ func TestServerMutationWorkflowsV4RuntimeReplaysDurableOperationReceiptWithoutHo
 				return msgpack.Marshal(map[string]any{"registry_revision": int64(1)})
 			case "runtime-control/runtime-control.v1.runtime.get":
 				return msgpack.Marshal(map[string]any{
-					"version": "runtime-control.v1", "workload": workload, "generation": int64(7), "revision": int64(1),
+					"version": "runtime-control.v1", "workload": workload, "node": node, "generation": int64(7), "revision": int64(1),
 				})
 			case "runtime-control/runtime-control.v1.action.request":
 				actionCalls++
@@ -547,6 +627,11 @@ func TestServerMutationWorkflowsV4RuntimeReplaysDurableOperationReceiptWithoutHo
 				return msgpack.Marshal(map[string]any{
 					"version": "runtime-control.v1", "status": "succeeded",
 				})
+			case "fleet/fleet.v1.command.server-mutation.settle.v1":
+				if err := validateServerMutationFleetSettlementV1(wire, lastOperation); err != nil {
+					return nil, err
+				}
+				return serverMutationFleetSettlementResultV1(lastOperation)
 			default:
 				return nil, fmt.Errorf("unexpected owner call %s/%s", target, function)
 			}
@@ -820,7 +905,7 @@ func TestServerMutationWorkflowsV4RuntimeWhitelistResolvesOnceAndProjectsDurable
 						})
 					case "runtime-control/runtime-control.v1.runtime.get":
 						return msgpack.Marshal(map[string]any{
-							"version": "runtime-control.v1", "workload": workload, "generation": int64(7), "revision": int64(1),
+							"version": "runtime-control.v1", "workload": workload, "node": node, "generation": int64(7), "revision": int64(1),
 						})
 					case "runtime-control/runtime-control.v1.action.request":
 						actions++
@@ -862,6 +947,11 @@ func TestServerMutationWorkflowsV4RuntimeWhitelistResolvesOnceAndProjectsDurable
 						return msgpack.Marshal(map[string]any{
 							"version": "runtime-control.v1", "status": "succeeded",
 						})
+					case "fleet/fleet.v1.command.server-mutation.settle.v1":
+						if err := validateServerMutationFleetSettlementV1(wire, "minecraft.access.apply"); err != nil {
+							return nil, err
+						}
+						return serverMutationFleetSettlementResultV1("minecraft.access.apply")
 					default:
 						return nil, fmt.Errorf("unexpected owner call %s/%s", target, function)
 					}
