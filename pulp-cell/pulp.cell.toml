@@ -1,7 +1,7 @@
 name = "lua-orchestrator"
 version = "0.1.1"
 wasm = "lua-orchestrator.wasm"
-wasm_sha256 = "cbee390eeaf14dfc5123820ea29dd272e73e226ee53fc8c604c7528de9d0d377"
+wasm_sha256 = "824e06de534d66b24cc4a4f6daf2aff4db3113a55046727487d1abc465e8d005"
 
 # The application-specific deployment manifest must list every engine the Lua
 # script may call. Empty here keeps the reusable cell least-privileged.
